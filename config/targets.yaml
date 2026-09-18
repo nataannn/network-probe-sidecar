@@ -1,0 +1,42 @@
+# Target definitions for the network probe sidecar.
+#
+# CAVEAT: Google and Microsoft mostly serve traffic through global
+# anycast/CDN infrastructure, so a hostname doesn't reliably pin you to one
+# physical region the way a cloud provider's regional API endpoint does.
+#   - google/*     : country-code domains (best-effort only, still anycast
+#                    under the hood - treat as "edge closest to that TLD",
+#                    not a guaranteed region)
+#   - microsoft/*  : Azure Resource Manager regional endpoints - these ARE
+#                    genuinely tied to a specific Azure region
+#   - aws/*        : regional service endpoints - genuinely regional
+#
+# Swap any host below for whatever you actually want latency numbers for
+# (e.g. a specific resource one of our clients depends on).
+
+targets:
+  - service: google
+    region: brazil
+    host: www.google.com.br
+  - service: google
+    region: us
+    host: www.google.com
+  - service: google
+    region: europe
+    host: www.google.de
+
+  - service: microsoft
+    region: brazil
+    host: brazilsouth.management.azure.com
+  - service: microsoft
+    region: us
+    host: eastus.management.azure.com
+  - service: microsoft
+    region: europe
+    host: westeurope.management.azure.com
+
+  - service: aws
+    region: sa-east-1
+    host: ec2.sa-east-1.amazonaws.com
+  - service: aws
+    region: us-east-1
+    host: ec2.us-east-1.amazonaws.com

@@ -1,0 +1,18 @@
+services:
+  network-probe-sidecar:
+    build: .
+    image: nataannn/network-probe-sidecar:latest
+    container_name: network-probe-sidecar
+    restart: unless-stopped
+    env_file:
+      - .env
+    # ICMP (ping) and traceroute need raw sockets - grant only what's needed
+    # instead of running the container as privileged.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    volumes:
+      - ./config/targets.yaml:/app/config/targets.yaml:ro
+      # Bind mount so the YYYY/MM/DD/HH tree is browsable directly on the
+      # host. Point this at wherever you want the data to live long-term.
+      - ./data:/data/probes
