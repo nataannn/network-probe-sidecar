@@ -13,7 +13,7 @@ services:
       - NET_ADMIN
     volumes:
       - ./config/targets.yaml:/app/config/targets.yaml:ro
-      - probe-data:/data/probes
+      - ./data:/data/probes
 
   network-probe-exporter:
     build: .
@@ -39,8 +39,4 @@ services:
       start_period: 10s
     depends_on:
       - network-probe-sidecar
-
-volumes:
-  probe-data:
-    driver: local
 
