@@ -179,16 +179,18 @@ def collect_metrics() -> None:
             host = record.get("host", "unknown")
             labels = {"service": service, "region": region, "host": host}
 
-        # Registry timestamp
-        ts = record.get("timestamp_utc")
-        if ts:
-            try:
-                probe_last_record_timestamp.labels(**labels).set(
-                    datetime.fromisoformat(ts).timestamp()
-                )
-            except ValueError:
-                pass
-            
+            # Record timestamp (data freshness)
+            ts = record.get("timestamp_utc")
+            if ts:
+                try:
+                    # Normalize trailing 'Z' (UTC) which fromisoformat rejects on older CPython
+                    normalized = ts.replace("Z", "+00:00")
+                    probe_last_record_timestamp.labels(**labels).set(
+                        datetime.fromisoformat(normalized).timestamp()
+                    )
+                except ValueError:
+                    log.warning("Could not parse timestamp_utc %r for %s/%s", ts, service, region)
+
             # DNS
             resolved = record.get("resolved_ip")
             probe_dns_resolution_success.labels(**labels).set(1 if resolved else 0)
@@ -223,7 +225,6 @@ def collect_metrics() -> None:
         exporter_last_collect_timestamp.set(time.time())
         log.info("Collection pass complete. Next in %ds.", COLLECT_INTERVAL)
         time.sleep(COLLECT_INTERVAL)
-
 
 # --- HTTP server ------------------------------------------------------------
 
