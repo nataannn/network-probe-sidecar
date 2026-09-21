@@ -18,6 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from datetime import datetime
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -87,6 +88,13 @@ probe_traceroute_success = Gauge(
 probe_dns_resolution_success = Gauge(
     "network_probe_dns_resolution_success",
     "1 if DNS resolution succeeded in the last cycle, 0 otherwise",
+    ["service", "region", "host"],
+    registry=registry,
+)
+
+probe_last_record_timestamp = Gauge(
+    "network_probe_last_record_timestamp",
+    "Unix timestamp from the probe record itself (data freshness, per target)",
     ["service", "region", "host"],
     registry=registry,
 )
@@ -171,6 +179,16 @@ def collect_metrics() -> None:
             host = record.get("host", "unknown")
             labels = {"service": service, "region": region, "host": host}
 
+        # Registry timestamp
+        ts = record.get("timestamp_utc")
+        if ts:
+            try:
+                probe_last_record_timestamp.labels(**labels).set(
+                    datetime.fromisoformat(ts).timestamp()
+                )
+            except ValueError:
+                pass
+            
             # DNS
             resolved = record.get("resolved_ip")
             probe_dns_resolution_success.labels(**labels).set(1 if resolved else 0)
