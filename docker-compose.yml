@@ -1,6 +1,5 @@
-# The collector runs here on the probe VM and writes to ./data.
-# The Prometheus exporter runs in the trygon-monitoring stack and reads
-# this data over NFS — it is intentionally NOT defined in this compose.
+# The Prometheus exporter runs separately (same image, `python exporter.py`)
+# and reads this data directory read-only - see README.
 
 services:
   network-probe-sidecar:
