@@ -1,0 +1,42 @@
+# Files that should NOT go into the Docker image
+
+# Config with secrets — never in the image!
+
+.env
+config.env
+
+# Probe data (JSONL output) — must never be baked into the image
+
+data/
+
+# Local Python virtual environment
+
+venv/
+.venv/
+
+# Python cache
+
+**pycache**/
+_.pyc
+_.pyo
+
+# Git
+
+.git/
+.gitignore
+.github/
+
+# Documentation (not needed in the image)
+
+README.md
+\*.md
+
+# IDEs
+
+.vscode/
+.idea/
+
+# OS
+
+.DS_Store
+Thumbs.db
