@@ -1,9 +1,21 @@
 # network-probe-sidecar
 
-Long-lived Python collector, same style as `proxmox-disk-sidecar`. Every
-`INTERVAL_SECONDS` (default 30s) it pings and traceroutes a configurable list
-of external targets (Google, Microsoft, AWS across BR/US/EU) and writes the
-results as JSON Lines, partitioned by **UTC** year/month/day/hour.
+Network reachability and latency monitoring for external services, packaged as
+a single Docker image with two entrypoints:
+
+- **Collector** (`main.py`): a long-lived loop that, every `INTERVAL_SECONDS`
+  (default 30s), resolves, pings and traceroutes a configurable list of external
+  targets (Google, Microsoft, AWS across BR/US/EU) and writes the results as
+  JSON Lines, partitioned by **UTC** year/month/day/hour.
+- **Exporter** (`exporter.py`): reads the latest record per target and exposes
+  it as Prometheus metrics on `:9200` (`/metrics`, `/healthz`).
+
+```
+collector ──> data/ (JSONL) ──> exporter ──> :9200/metrics ──> Prometheus
+```
+
+Both can run on the same host, or on different hosts sharing the data
+directory read-only (e.g. over NFS).
 
 ## Output layout
 
@@ -45,7 +57,7 @@ One file per `service_region` per UTC hour; each line is one probe cycle:
   "traceroute": {
     "success": true,
     "hop_count": 14,
-    "hops": [{"hop": 1, "ip": "10.100.1.1", "rtt_ms": [0.4]}]
+    "hops": [{ "hop": 1, "ip": "192.168.1.1", "rtt_ms": [0.4] }]
   }
 }
 ```
@@ -54,38 +66,122 @@ DNS failures, timeouts, and packet loss are all recorded (`success: false` +
 an `error` field) instead of crashing the collector - it's meant to run
 unattended for weeks.
 
-## Deploy on SRV04
+## Running the collector
 
-This assumes SRV04 already has Docker (same setup as the Semaphore UI /
-proxmox-disk-sidecar deployments). Provisioning the VM itself, if you want a
-dedicated one rather than reusing an existing Docker host, is still a manual
-step through the PVE web UI, same as always - this repo just gives you what
-to put on it afterwards.
+Requires a host with Docker and outbound ICMP/UDP to the targets.
 
 ```bash
-git clone <this-repo> network-probe-sidecar
+git clone https://github.com/nataannn/network-probe-sidecar.git
 cd network-probe-sidecar
 cp .env.example .env        # adjust intervals/timeouts if needed
-docker compose up -d --build
+docker compose pull         # use the published image
+docker compose up -d        # or: docker compose up -d --build (build from source)
 docker compose logs -f      # confirm cycles are running every 30s
 ```
 
-Adjust `config/targets.yaml` to change which hosts get probed - no code
-changes needed, just restart the container to pick up edits (or add a
-`docker compose watch` / bind-mount reload if you want hot-reload later).
+Probe results land in `./data`. Edit `config/targets.yaml` to change which
+hosts get probed - no code changes needed, just `docker compose restart` to
+pick up edits.
 
-## Notes / follow-ups
+## Running the exporter
+
+Same image, different command. Point it at the collector's data directory
+(read-only):
+
+```yaml
+services:
+  network-probe-exporter:
+    image: nataannn/network-probe-sidecar:latest
+    command: ["python", "exporter.py"]
+    restart: unless-stopped
+    environment:
+      METRICS_PORT: 9200
+      COLLECT_INTERVAL: 30
+      DATA_DIR: /data/probes
+      LOG_LEVEL: INFO
+    volumes:
+      - /path/to/probe-data:/data/probes:ro
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9200/healthz')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
+Targets are discovered automatically from the data directory - adding a target
+to `targets.yaml` requires no exporter change.
+
+If the data directory is a network mount, mount it on the host **before**
+starting the container. A container started before the mount exists keeps a
+stale view of an empty directory; recreate it (`docker rm -f` + `up -d`) to fix.
+
+Prometheus scrape job:
+
+```yaml
+- job_name: network-probe-exporter
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  static_configs:
+    - targets:
+        - <exporter-host>:9200
+```
+
+## Metrics
+
+All per-target metrics carry `service`, `region` and `host` labels.
+
+| Metric                                                  | Description                                     |
+| ------------------------------------------------------- | ----------------------------------------------- |
+| `network_probe_ping_success`                            | 1 if the last ping succeeded                    |
+| `network_probe_ping_packet_loss_pct`                    | Packet loss, %                                  |
+| `network_probe_ping_rtt_avg_ms` / `_min_ms` / `_max_ms` | Round-trip time, ms                             |
+| `network_probe_traceroute_success`                      | 1 if the last traceroute succeeded              |
+| `network_probe_traceroute_hop_count`                    | Hops to the target                              |
+| `network_probe_dns_resolution_success`                  | 1 if the hostname resolved                      |
+| `network_probe_last_record_timestamp`                   | Timestamp of the latest record (data freshness) |
+| `network_probe_exporter_last_collect_timestamp`         | Last exporter collection loop                   |
+| `network_probe_exporter_targets_found`                  | Targets discovered in the data directory        |
+
+## Known behaviors
+
+- **AWS endpoints block ICMP.** `ping.success: false` and 100% packet loss are
+  expected for them; DNS and traceroute still work. Exclude them from ICMP
+  alerts with `service!="aws"`.
+- **Some providers stop answering traceroute after a few hops** (`* * *`).
+  This is expected and not a failure of the path.
+
+## Alerting tips
+
+- Alert on data freshness, not just exporter uptime:
+  `time() - network_probe_last_record_timestamp > 300`. If the collector or the
+  shared data directory stops, the exporter stays up and keeps serving the last
+  values it read.
+- Use a `for:` window (5-10 min) on loss and latency alerts; short spikes are
+  common on the public internet.
+
+## CI/CD
+
+`.github/workflows/docker-publish.yml` builds and pushes the image to Docker Hub:
+
+- push to `main` → `latest`
+- tag `v*.*.*` → versioned tag
+
+Requires the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+
+## Notes
 
 - `cap_add: NET_RAW, NET_ADMIN` is required for ping/traceroute inside the
   container without running it privileged.
 - `MAX_WORKERS` controls how many targets are probed in parallel; keep it
-  >= the number of targets so a full cycle comfortably fits inside
-  `INTERVAL_SECONDS`. With 8 targets and the default timeouts, a cycle
-  typically finishes well under 30s, but if you add many more targets or
-  tighten timeouts, watch the "cycle took Xs" warnings in the logs.
-- Same CI/CD path as `proxmox-disk-sidecar` would work here too (GitHub
-  Actions -> Docker Hub -> Komodo pulls the new tag) if you want this
-  building automatically instead of `docker compose up --build` on the box.
-- Natural next step if you want this in Grafana: add a small exporter that
-  tails the latest JSONL per target and exposes packet loss / avg RTT as
-  Prometheus gauges - happy to help with that once this is collecting data.
+  > = the number of targets so a full cycle comfortably fits inside
+  > `INTERVAL_SECONDS`. With 8 targets and the default timeouts, a cycle
+  > typically finishes well under 30s, but if you add many more targets or
+  > tighten timeouts, watch the "cycle took Xs" warnings in the logs.
